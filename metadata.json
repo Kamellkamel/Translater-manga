@@ -1,0 +1,6 @@
+{
+  "name": "Manga Translator Reader",
+  "description": "A personal manga and manhwa chapter reader with automatic Arabic translation powered by OCR and Gemini AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
