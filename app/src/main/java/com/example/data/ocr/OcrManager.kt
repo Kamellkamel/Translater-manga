@@ -16,7 +16,7 @@ import java.lang.Exception
 import kotlin.coroutines.resume
 
 class OcrManager(private val context: Context) {
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
     suspend fun loadBitmapFromUrl(url: String): Bitmap? = withContext(Dispatchers.IO) {
         try {
