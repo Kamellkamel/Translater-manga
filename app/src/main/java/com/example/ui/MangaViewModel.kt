@@ -156,11 +156,13 @@ class MangaViewModel(application: Application) : AndroidViewModel(application) {
                     _activePages.value = cached
                     _isLoading.value = false
                     
-                    // Trigger auto translate on load if enabled
+                    // Trigger auto translate on load sequentially if enabled, preventing OOM
                     if (_autoTranslate.value) {
-                        cached.forEach { page ->
-                            if (page.translationArabic == null) {
-                                translatePage(page)
+                        viewModelScope.launch {
+                            cached.forEach { page ->
+                                if (page.translationArabic == null) {
+                                    translatePageSuspend(page)
+                                }
                             }
                         }
                     }
@@ -197,10 +199,12 @@ class MangaViewModel(application: Application) : AndroidViewModel(application) {
                 // Observe from database or set directly to trigger flow
                 _activePages.value = newPages
 
-                // If auto-translate is on, translate the pages
+                // If auto-translate is on, translate the pages sequentially to avoid ANRs and resource crashes
                 if (_autoTranslate.value) {
-                    newPages.forEach { page ->
-                        translatePage(page)
+                    viewModelScope.launch {
+                        newPages.forEach { page ->
+                            translatePageSuspend(page)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -211,59 +215,65 @@ class MangaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun translatePage(page: CachedPage) {
-        // Prevent duplicate concurrent translations
+    /**
+     * Common suspending implementation of translation process.
+     * Sequenced cleanly to optimize background thread performance.
+     */
+    suspend fun translatePageSuspend(page: CachedPage) {
         if (_translatingMap.value[page.id] == true) return
+        _translatingMap.value = _translatingMap.value + (page.id to true)
+        try {
+            // Step 1: Handle OCR
+            var textToTranslate = page.ocrText
 
-        viewModelScope.launch {
-            _translatingMap.value = _translatingMap.value + (page.id to true)
-            try {
-                // Step 1: Handle OCR
-                var textToTranslate = page.ocrText
-
-                if (textToTranslate == null) {
-                    // Check if it's a demo page with pre-cooked English texts
-                    val demoText = ocrManager.getDemoTextForPage(page.imageUrl)
-                    if (demoText != null) {
-                        textToTranslate = demoText
-                    } else {
-                        // Standard cloud image OCR
-                        val bitmap = ocrManager.loadBitmapFromUrl(page.imageUrl)
-                        if (bitmap != null) {
-                            textToTranslate = ocrManager.recognizeText(bitmap)
-                        }
-                    }
-                }
-
-                // If no text was found, set a small notice
-                val finalOcrText = if (textToTranslate.isNullOrBlank()) "No text found on page." else textToTranslate
-                page.ocrText = finalOcrText
-
-                // Step 2: Translate via Gemini
-                val translated = if (!finalOcrText.contains("No text found")) {
-                    withContext(Dispatchers.IO) {
-                        translationClient.translateToArabic(finalOcrText)
-                    }
+            if (textToTranslate == null) {
+                // Check if it's a demo page with pre-cooked English texts
+                val demoText = ocrManager.getDemoTextForPage(page.imageUrl)
+                if (demoText != null) {
+                    textToTranslate = demoText
                 } else {
-                    ""
+                    // Standard cloud image OCR using enhanced software decodable bitmaps
+                    val bitmap = ocrManager.loadBitmapFromUrl(page.imageUrl)
+                    if (bitmap != null) {
+                        textToTranslate = ocrManager.recognizeText(bitmap)
+                    }
                 }
-
-                page.translationArabic = translated
-
-                // Step 3: Update local database cache
-                withContext(Dispatchers.IO) {
-                    dao.updatePage(page)
-                }
-
-                // Step 4: Refresh active pages stream in UI
-                _activePages.value = _activePages.value.map {
-                    if (it.id == page.id) page.copy() else it
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                _translatingMap.value = _translatingMap.value + (page.id to false)
             }
+
+            // If no text was found, set a small notice
+            val finalOcrText = if (textToTranslate.isNullOrBlank()) "No text found on page." else textToTranslate
+            page.ocrText = finalOcrText
+
+            // Step 2: Translate via Gemini
+            val translated = if (!finalOcrText.contains("No text found")) {
+                withContext(Dispatchers.IO) {
+                    translationClient.translateToArabic(finalOcrText)
+                }
+            } else {
+                ""
+            }
+
+            page.translationArabic = translated
+
+            // Step 3: Update local database cache
+            withContext(Dispatchers.IO) {
+                dao.updatePage(page)
+            }
+
+            // Step 4: Refresh active pages stream in UI
+            _activePages.value = _activePages.value.map {
+                if (it.id == page.id) page.copy() else it
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            _translatingMap.value = _translatingMap.value + (page.id to false)
+        }
+    }
+
+    fun translatePage(page: CachedPage) {
+        viewModelScope.launch {
+            translatePageSuspend(page)
         }
     }
 
